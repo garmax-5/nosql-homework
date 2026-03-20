@@ -4,6 +4,9 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.time.Instant;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.UUID;
 
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
@@ -15,6 +18,8 @@ public class RateLimiter {
   private final long maxRequestCount;
   private final long timeWindowSeconds;
 
+  private final String SCRIPT = LuaScriptLoader.load("scripts/rate_limiter.lua");
+
   public RateLimiter(Jedis redis, String label, long maxRequestCount, long timeWindowSeconds) {
     this.redis = redis;
     this.label = label;
@@ -22,21 +27,33 @@ public class RateLimiter {
     this.timeWindowSeconds = timeWindowSeconds;
   }
 
+  /**
+   Замечание по архитектуре:
+   Скрипт Lua загружается напрямую через LuaScriptLoader
+   Не сделал отдельный интерфейс ScriptLoader, потому что:
+     - на данный момент нет разных вариантов загрузки скрипта
+     - абстракция через интерфейс добавила бы лишний уровень сложности без практической пользы (пришлось бы переписывать архитектуру)
+
+   В будущем, если появятся разные источники Lua скриптов, можно будет вынести ScriptLoader
+   в отдельный интерфейс и внедрять его через конструктор, путь к файлу можно вынести в отдельный конфигурационный файл
+   (В данный момент в коде нарушены принципы SOLID).
+   */
   public boolean pass() {
     long timeNow = Instant.now().toEpochMilli();
-    long windowStart = timeNow - timeWindowSeconds * 1000;
+    String requestId = timeNow + ":" + UUID.randomUUID();
 
-    redis.zremrangeByScore(label, 0, windowStart);
-    long requestCount = redis.zcount(label, windowStart, timeNow);
+    Object result = redis.eval(
+        SCRIPT,
+        Collections.singletonList(label),
+        Arrays.asList(
+            String.valueOf(timeNow),
+            String.valueOf(timeWindowSeconds),
+            String.valueOf(maxRequestCount),
+            requestId
+        )
+    );
 
-    if (requestCount >= maxRequestCount) {
-      return false;
-    }
-
-    redis.zadd(label, timeNow, String.valueOf(timeNow));
-    redis.expire(label, (int) timeWindowSeconds);
-
-    return true;
+    return Long.valueOf(1L).equals(result);
   }
 
   public static void main(String[] args) {
