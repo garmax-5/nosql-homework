@@ -28,8 +28,8 @@ limit 5;
 
 -- 4. Запрос: Количество запросов по часам за весь период в логах
 select
-    toStartOfHour(timestamp) as hour_timestamp,
-    count(timestamp)         as count_response
+    toHour(timestamp) as hour_timestamp,
+    count(timestamp)  as count_response
 from server_logs
 group by hour_timestamp
 order by hour_timestamp;
